@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: seat_reservation
+      POSTGRES_USER: seat_reservation
+      POSTGRES_PASSWORD: seat_reservation
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seat_reservation -d seat_reservation"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DATABASE_URL: jdbc:postgresql://postgres:5432/seat_reservation
+      DATABASE_USERNAME: seat_reservation
+      DATABASE_PASSWORD: seat_reservation
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres-data:
