@@ -44,13 +44,5 @@ public class AuthController {
         return ResponseEntity.ok(response);
     }
 
-    @GetMapping("/me")
-    @RequiresAuthentication
-    public ResponseEntity<Map<String, Object>> getCurrentUser(@AuthenticationPrincipal Jwt jwt) {
-        return ResponseEntity.ok(Map.of(
-                "userId", jwt.getSubject(),
-                "claims", jwt.getClaims(),
-                "expiresAt", jwt.getExpiresAt() != null ? jwt.getExpiresAt().toString() : ""
-        ));
-    }
+
 }
