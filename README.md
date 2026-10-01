@@ -22,7 +22,6 @@ The application will start on `http://localhost:8080`.
 - `POST /api/v1/auth/register` - Register a new user
 - `POST /api/v1/auth/token` - Generate an auth token
 - `POST /api/v1/auth/login` - User login
-- `GET /api/v1/auth/me` - Get current authenticated user details (Requires `Authorization: Bearer <token>`)
 
 ### Monitoring & Health
 - `GET /api/v1/health` - Health check endpoint
