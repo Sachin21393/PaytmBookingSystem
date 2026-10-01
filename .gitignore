@@ -1,0 +1,51 @@
+# Build Artifacts
+target/
+build/
+*.jar
+*.war
+*.ear
+*.class
+
+# IDE & Editor Files
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+.apt_generated/
+.springBeans
+.sts4-cache/
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+# Logs & Temp files
+*.log
+logs/
+temp/
+tmp/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Environment & Secret files
+.env
+.env.local
+*.secret
+*.pem
+*.key
+
+# Maven Wrapper JAR (downloaded dynamically if wrapper scripts are run)
+.mvn/wrapper/maven-wrapper.jar
+
+# Help files
+HELP.md
