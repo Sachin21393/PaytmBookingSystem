@@ -19,7 +19,7 @@ A high-concurrency ticket reservation engine designed to sell assigned seats for
   .\burst.bat https://paytmbookingsystem.onrender.com
 
   # Or directly via Node.js (All platforms):
-  node burst_test.js https://paytmbookingsystem.onrender.com --total 20000 --concurrency 100
+  node burst_test.js https://paytmbookingsystem.onrender.com --total 20000 --concurrency 30
   ```
 
 ---
@@ -75,15 +75,29 @@ docker-compose down -v
 
 ### Option 2: Native Run via Maven Wrapper
 
-If you prefer running natively with your local JDK:
+If you prefer running natively with your local JDK, ensure PostgreSQL is running with the following credentials:
 
+#### PostgreSQL Database Setup & Default Credentials
+| Parameter | Default Value | Environment Variable Override |
+| :--- | :--- | :--- |
+| **Database Name** | `paytmdb` | `DB_URL` (e.g., `jdbc:postgresql://localhost:5432/paytmdb`) |
+| **Username** | `postgres` | `DB_USERNAME` |
+| **Password** | `postgres` | `DB_PASSWORD` |
+| **Port** | `5433` (or `5432`) | Configured in `DB_URL` |
+
+*Note: Hibernate automatically creates and updates all database tables (`ddl-auto=update`), so no manual SQL scripts are required.*
+
+#### Step-by-Step Native Execution:
 ```bash
-# 1. Start a local PostgreSQL container (or use your existing Postgres instance):
+# 1. Start a local PostgreSQL container with the expected database and credentials:
 docker run --name paytm-postgres \
   -e POSTGRES_DB=paytmdb \
   -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgrespassword \
-  -p 5432:5432 -d postgres:16-alpine
+  -e POSTGRES_PASSWORD=postgres \
+  -p 5433:5432 -d postgres:16-alpine
+
+# (Alternatively, if using an existing local PostgreSQL on standard port 5432:
+# ensure database 'paytmdb' exists, and pass DB_URL="jdbc:postgresql://localhost:5432/paytmdb")
 
 # 2. Start the Spring Boot backend:
 # On Linux/macOS:
@@ -92,6 +106,9 @@ docker run --name paytm-postgres \
 # On Windows PowerShell:
 .\mvnw.cmd spring-boot:run
 
+# (Optional: to pass custom credentials directly:
+# .\mvnw.cmd spring-boot:run -Dspring-boot.run.arguments="--DB_URL=jdbc:postgresql://localhost:5432/paytmdb --DB_PASSWORD=your_password")
+
 # 3. In a separate terminal, execute the burst test:
 # On Linux / macOS:
 ./burst.sh http://localhost:8080
@@ -99,7 +116,7 @@ docker run --name paytm-postgres \
 # On Windows (PowerShell / Command Prompt):
 .\burst.bat http://localhost:8080
 
-# Or:
+# Or directly with Node.js:
 node burst_test.js http://localhost:8080
 ```
 
@@ -183,7 +200,7 @@ We provide a zero-dependency, native Node.js load-testing harness and a bash wra
 .\burst.bat https://paytmbookingsystem.onrender.com
 
 # Or directly with Node.js (All platforms):
-node burst_test.js https://paytmbookingsystem.onrender.com --total 20000 --concurrency 100
+node burst_test.js https://paytmbookingsystem.onrender.com --total 20000 --concurrency 30
 ```
 
 ### 2. What the Script Automatically Tests:

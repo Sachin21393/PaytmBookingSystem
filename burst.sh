@@ -5,7 +5,7 @@
 
 TARGET_URL="${1:-https://paytmbookingsystem.onrender.com}"
 TOTAL="${2:-20000}"
-CONCURRENCY="${3:-100}"
+CONCURRENCY="${3:-30}"
 
 echo "======================================================================"
 echo " PAYTM MONEY LOAD TEST RUNNER"

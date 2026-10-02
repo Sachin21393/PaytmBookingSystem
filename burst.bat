@@ -10,7 +10,7 @@ set TOTAL=%2
 if "%TOTAL%"=="" set TOTAL=20000
 
 set CONCURRENCY=%3
-if "%CONCURRENCY%"=="" set CONCURRENCY=100
+if "%CONCURRENCY%"=="" set CONCURRENCY=30
 
 echo ======================================================================
 echo  PAYTM MONEY LOAD TEST RUNNER (WINDOWS)

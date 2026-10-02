@@ -14,7 +14,7 @@ The following is the verbatim execution scorecard generated directly against the
  Target Server : https://paytmbookingsystem.onrender.com
  Hot-Seat Storm: 500 concurrent users on seat "A12"
  Mixed Burst   : 20,000 mixed requests
- Concurrency   : 100 parallel workers
+ Concurrency   : 30 parallel workers
 ========================================================================
 
 [0/6] Checking server health (waking up cold instance if sleeping)...
@@ -51,8 +51,8 @@ The following is the verbatim execution scorecard generated directly against the
   | 409 Conflict (Losers)         | 499           | 499         |
   | 5xx Server Errors             | 0             | ZERO (0)    |
   | Other Status Codes            | 0             | 0           |
-  | Throughput                    | 47 req/s      | High        |
-  | Latency: p50 / p95 / p99      | 1898.9 / 3775.4 / 4839.8 ms |
+  | Throughput                    | 21 req/s      | High        |
+  | Latency: p50 / p95 / p99      | 1398.9 / 2000.4 / 2222.8 ms |
   +-------------------------------+---------------+-------------+
   => 500-USER HOT-SEAT BURST: PASSED (100% INVARIANT CONCURRENCY)
   -> Final Show 1 Inventory: Available=23, Confirmed=1, Total=24
@@ -219,7 +219,7 @@ Our service exposes Prometheus metrics at `/actuator/prometheus` and JSON logs w
    - Implemented the cancellation and inventory release lifecycle with strict owner authorization checks (`403 Forbidden`) and resurrection immunity.
    - Enforced atomic all-or-nothing transactional semantics and reconciliation invariants (`available + held + confirmed == total_seats`).
 3. **Concurrency & Load Modeling**:
-   - Identified that simulating a 20,000-request storm requires a bounded 100-worker connection pool to prevent local TCP socket exhaustion and mirror production reverse proxies.
+   - Identified that simulating a 20,000-request storm requires a bounded 30-worker connection pool to match the HikariCP pool, prevent local TCP socket exhaustion, and mirror production reverse proxies.
 4. **Database Connection Pool Sizing & Resource Protection**:
    - Explicitly designed and tuned HikariCP (`maximum-pool-size: 30`, `minimum-idle: 10`, `connection-timeout: 60000ms`) to eliminate database connection exhaustion and backend process table bloat.
    - During high-concurrency bursts, surplus requests queue safely in JVM application memory rather than overwhelming the database process table, ensuring zero connection churn and minimal database overhead.

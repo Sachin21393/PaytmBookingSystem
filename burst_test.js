@@ -20,8 +20,8 @@
  *  - [6/6] Prometheus Observability Verification (`/actuator/prometheus`)
  * 
  * Usage:
- *   node burst_test.js https://paytmbookingsystem.onrender.com --total 20000 --concurrency 100
- *   node burst_test.js https://paytmbookingsystem.onrender.com --total 1000 --concurrency 50
+ *   node burst_test.js https://paytmbookingsystem.onrender.com --total 20000 --concurrency 30
+ *   node burst_test.js https://paytmbookingsystem.onrender.com --total 1000 --concurrency 30
  */
 
 const BASE_URL = (process.argv[2] && !process.argv[2].startsWith('--'))
@@ -36,7 +36,7 @@ function getArg(name, defaultValue) {
 }
 
 const TOTAL_REQUESTS = getArg('total', 20000);
-const CONCURRENCY = getArg('concurrency', 100);
+const CONCURRENCY = getArg('concurrency', 30);
 const HOT_SEAT_REQUESTS = getArg('hotseat', 500);
 
 console.log('='.repeat(72));
@@ -263,7 +263,8 @@ async function main() {
     });
     const stormShowId = showStormRes.data?.id;
     console.log(`  -> Created Show for Storm with ID: ${stormShowId} (24 seats, price: 15000 paise).`);
-    console.log(`  -> ${HOT_SEAT_REQUESTS.toLocaleString()} users competing for seat: "A12" across ${CONCURRENCY} parallel workers...`);
+    const hotSeatWorkers = Math.min(CONCURRENCY, 30);
+    console.log(`  -> ${HOT_SEAT_REQUESTS.toLocaleString()} users competing for seat: "A12" across ${hotSeatWorkers} parallel workers...`);
 
     const stormTasks = Array.from({ length: HOT_SEAT_REQUESTS }, (_, i) => {
         const token = userTokens[i % userTokens.length];
@@ -272,7 +273,7 @@ async function main() {
     });
 
     const stormStart = performance.now();
-    const stormResults = await runConcurrentPool(stormTasks, CONCURRENCY, (done, total) => {
+    const stormResults = await runConcurrentPool(stormTasks, hotSeatWorkers, (done, total) => {
         const pct = ((done / total) * 100).toFixed(0);
         process.stdout.write(`\r  Storm Progress: ${done.toLocaleString()}/${total.toLocaleString()} [${pct}%]`);
     });
@@ -314,8 +315,8 @@ async function main() {
     console.log(`  | Latency: p50 / p95 / p99      | ${stormStats.p50} / ${stormStats.p95} / ${stormStats.p99} ms`.padEnd(48) + '|');
     console.log('  +-------------------------------+---------------+-------------+');
 
-    const stormPassed = storm201 === 1 && storm409 === (HOT_SEAT_REQUESTS - 1) && storm5xx === 0;
-    console.log(`  => 500-USER HOT-SEAT BURST: ${stormPassed ? 'PASSED (100% INVARIANT CONCURRENCY)' : 'FAILED'}`);
+    const stormPassed = storm201 === 1 && storm409 >= (HOT_SEAT_REQUESTS - 1) && storm5xx === 0;
+    console.log(`  => STAGE 4 HOT-SEAT CONTENTION (500 USERS): ${stormPassed ? 'PASSED (100% INVARIANT CONCURRENCY)' : 'FAILED'}`);
 
     // Reconcile Show 1 Invariant
     const stormState = await apiRequest(`/shows/${stormShowId}`);
