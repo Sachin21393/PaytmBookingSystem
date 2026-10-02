@@ -37,6 +37,7 @@ public class SecurityConfiguration {
             "/actuator/**",
             "/api/v1/health",
             "/api/v1/auth/token",
+            "/api/v1/auth/login",
             "/api/v1/auth/register",
             "/h2-console/**",
             "/error"

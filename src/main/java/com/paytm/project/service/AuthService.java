@@ -7,6 +7,7 @@ import com.paytm.project.entity.User;
 import com.paytm.project.repository.UserRepository;
 import com.paytm.project.security.JwtTokenService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -15,6 +16,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Map;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuthService {
@@ -25,12 +27,13 @@ public class AuthService {
 
     @Transactional
     public AuthResponse register(RegisterRequest request) {
-        if (userRepository.existsByUsername(request.getUsername())) {
+        String username = request.getUsername().trim();
+        if (userRepository.existsByUsername(username)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Username already exists");
         }
 
         User user = User.builder()
-                .username(request.getUsername())
+                .username(username)
                 .password(passwordEncoder.encode(request.getPassword()))
                 .email(request.getEmail())
                 .fullName(request.getFullName())
@@ -38,6 +41,7 @@ public class AuthService {
                 .build();
 
         userRepository.save(user);
+        log.info("User registered successfully: {}", username);
 
         String token = jwtTokenService.generateToken(user.getUsername(), Map.of("role", user.getRole()));
 
@@ -50,16 +54,29 @@ public class AuthService {
                 .build();
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public AuthResponse login(AuthRequest request) {
-        User user = userRepository.findByUsername(request.getUsername())
+        String username = request.getUsername().trim();
+        User user = userRepository.findByUsername(username)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid username or password"));
 
-        if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+        boolean matches = passwordEncoder.matches(request.getPassword(), user.getPassword());
+        
+        // Backward compatibility: If the stored password was stored in plaintext, authenticate and upgrade to BCrypt
+        if (!matches && request.getPassword().equals(user.getPassword())) {
+            log.info("Upgrading legacy plaintext password for user: {}", username);
+            user.setPassword(passwordEncoder.encode(request.getPassword()));
+            userRepository.save(user);
+            matches = true;
+        }
+
+        if (!matches) {
+            log.warn("Invalid password attempt for username: {}", username);
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid username or password");
         }
 
         String token = jwtTokenService.generateToken(user.getUsername(), Map.of("role", user.getRole()));
+        log.info("User authenticated successfully: {}", username);
 
         return AuthResponse.builder()
                 .token(token)
