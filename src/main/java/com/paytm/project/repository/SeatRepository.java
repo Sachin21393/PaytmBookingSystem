@@ -22,4 +22,11 @@ public interface SeatRepository extends JpaRepository<Seat, Long> {
             @Param("showId") Long showId,
             @Param("seatNumbers") Collection<String> seatNumbers
     );
+
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT s FROM Seat s JOIN FETCH s.show sh WHERE sh.id = :showId AND s.seatNumber IN :seatNumbers ORDER BY s.seatNumber ASC")
+    List<Seat> findByShowIdAndSeatNumberInForUpdate(
+            @Param("showId") Long showId,
+            @Param("seatNumbers") Collection<String> seatNumbers
+    );
 }

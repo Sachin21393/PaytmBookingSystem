@@ -58,6 +58,10 @@ public class Seat {
     @Builder.Default
     private SeatStatus status = SeatStatus.AVAILABLE;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "reservation_id")
+    private Reservation reservation;
+
     @Version
     @Column(nullable = false)
     @Builder.Default

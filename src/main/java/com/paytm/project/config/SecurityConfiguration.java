@@ -39,6 +39,8 @@ public class SecurityConfiguration {
             "/api/v1/auth/token",
             "/api/v1/auth/login",
             "/api/v1/auth/register",
+            "/shows/**",
+            "/api/v1/shows/**",
             "/h2-console/**",
             "/error"
     };
