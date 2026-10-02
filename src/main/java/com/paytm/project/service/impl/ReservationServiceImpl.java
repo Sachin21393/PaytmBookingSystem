@@ -41,6 +41,7 @@ public class ReservationServiceImpl implements ReservationService {
     private final ReservationRepository reservationRepository;
     private final IdempotencyRepository idempotencyRepository;
     private final ObjectMapper objectMapper;
+    private final com.paytm.project.metrics.ReservationMetrics reservationMetrics;
 
     @Override
     @Transactional
@@ -48,7 +49,6 @@ public class ReservationServiceImpl implements ReservationService {
         if (request == null || request.getSeatNumbers() == null || request.getSeatNumbers().isEmpty()) {
             throw new IllegalArgumentException("At least one seat number is required");
         }
-
 
         List<String> sortedSeatNumbers = request.getSeatNumbers().stream()
                 .map(String::trim)
@@ -61,7 +61,6 @@ public class ReservationServiceImpl implements ReservationService {
             throw new IllegalArgumentException("Valid seat numbers must be provided");
         }
 
-
         String requestHash = computeRequestHash(showId, sortedSeatNumbers);
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             Optional<IdempotencyRecord> existingRecord = idempotencyRepository.findByIdempotencyKey(idempotencyKey);
@@ -69,8 +68,10 @@ public class ReservationServiceImpl implements ReservationService {
                 IdempotencyRecord record = existingRecord.get();
                 if (record.getRequestHash().equals(requestHash)) {
                     log.info("Returning cached response for idempotency key: {}", idempotencyKey);
+                    reservationMetrics.incrementDeclined("idempotent-replay");
                     return deserializeResponse(record.getResponseBody());
                 } else {
+                    reservationMetrics.incrementDeclined("idempotent-mismatch");
                     throw new InvalidIdempotencyKeyException(
                             "Idempotency-Key '" + idempotencyKey + "' has already been used with a different request payload"
                     );
@@ -81,10 +82,10 @@ public class ReservationServiceImpl implements ReservationService {
         Show show = showRepository.findById(showId)
                 .orElseThrow(() -> new ResourceNotFoundException("Show not found with id: " + showId));
 
-
         int perUserLimit = show.getPerUserLimit() != null ? show.getPerUserLimit() : 4;
         long currentConfirmed = reservationRepository.countConfirmedSeatsByUserAndShow(user.getId(), showId);
         if (currentConfirmed + sortedSeatNumbers.size() > perUserLimit) {
+            reservationMetrics.incrementDeclined("per-user-limit");
             throw new UserLimitExceededException(
                     "Reservation exceeds per-user limit of " + perUserLimit + " seats (currently confirmed: "
                             + currentConfirmed + ", requested: " + sortedSeatNumbers.size() + ")"
@@ -96,13 +97,12 @@ public class ReservationServiceImpl implements ReservationService {
             throw new ResourceNotFoundException("One or more requested seats do not exist for show " + showId);
         }
 
-
         for (Seat seat : lockedSeats) {
             if (seat.getStatus() != SeatStatus.AVAILABLE) {
+                reservationMetrics.incrementDeclined("seat-taken");
                 throw new SeatConflictException("Seat " + seat.getSeatNumber() + " is already booked or held");
             }
         }
-
 
         long totalAmountPaise = (long) lockedSeats.size() * show.getPricePaise();
         Reservation reservation = Reservation.builder()
@@ -131,7 +131,6 @@ public class ReservationServiceImpl implements ReservationService {
                 .createdAt(savedReservation.getCreatedAt())
                 .build();
 
-
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             IdempotencyRecord record = IdempotencyRecord.builder()
                     .idempotencyKey(idempotencyKey)
@@ -142,7 +141,44 @@ public class ReservationServiceImpl implements ReservationService {
             idempotencyRepository.save(record);
         }
 
+        reservationMetrics.incrementConfirmed();
         return response;
+    }
+
+    @Override
+    @Transactional
+    public ReservationResponse cancelReservation(Long reservationId, User user) {
+        Reservation reservation = reservationRepository.findById(reservationId)
+                .orElseThrow(() -> new ResourceNotFoundException("Reservation not found with id: " + reservationId));
+
+        if (!reservation.getUser().getId().equals(user.getId())) {
+            throw new org.springframework.security.access.AccessDeniedException("You are not authorized to cancel this reservation");
+        }
+
+        List<Seat> seats = seatRepository.findByReservationId(reservationId);
+        List<String> seatNumbers = seats.stream().map(Seat::getSeatNumber).sorted().toList();
+
+        if (!"CANCELLED".equals(reservation.getStatus())) {
+            reservation.setStatus("CANCELLED");
+            reservationRepository.save(reservation);
+
+            for (Seat seat : seats) {
+                seat.setStatus(SeatStatus.AVAILABLE);
+                seat.setReservation(null);
+            }
+            seatRepository.saveAll(seats);
+            log.info("Reservation {} cancelled by user {}. Seats released: {}", reservationId, user.getUsername(), seatNumbers);
+        }
+
+        return ReservationResponse.builder()
+                .reservationId(reservation.getId())
+                .showId(reservation.getShow().getId())
+                .userId(reservation.getUser().getId())
+                .seats(seatNumbers)
+                .totalAmountPaise(reservation.getTotalAmountPaise())
+                .status("CANCELLED")
+                .createdAt(reservation.getCreatedAt())
+                .build();
     }
 
     private String computeRequestHash(Long showId, List<String> sortedSeatNumbers) {

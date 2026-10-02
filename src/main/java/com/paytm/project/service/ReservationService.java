@@ -7,4 +7,6 @@ import com.paytm.project.entity.User;
 public interface ReservationService {
 
     ReservationResponse reserveSeats(Long showId, ReserveSeatRequest request, User user, String idempotencyKey);
+
+    ReservationResponse cancelReservation(Long reservationId, User user);
 }

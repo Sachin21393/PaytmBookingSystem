@@ -22,7 +22,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(InvalidIdempotencyKeyException.class)
     public ResponseEntity<Map<String, Object>> handleInvalidIdempotencyKey(InvalidIdempotencyKeyException ex) {
-        return buildResponse(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_IDEMPOTENCY_KEY", ex.getMessage());
+        return buildResponse(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT", ex.getMessage());
     }
 
     @ExceptionHandler(UserLimitExceededException.class)
@@ -57,6 +57,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(org.springframework.web.bind.MissingRequestHeaderException.class)
     public ResponseEntity<Map<String, Object>> handleMissingHeader(org.springframework.web.bind.MissingRequestHeaderException ex) {
         return buildResponse(HttpStatus.BAD_REQUEST, "MISSING_HEADER", "Missing required header: " + ex.getHeaderName());
+    }
+
+    @ExceptionHandler(org.springframework.security.access.AccessDeniedException.class)
+    public ResponseEntity<Map<String, Object>> handleAccessDenied(org.springframework.security.access.AccessDeniedException ex) {
+        return buildResponse(HttpStatus.FORBIDDEN, "FORBIDDEN", ex.getMessage());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
