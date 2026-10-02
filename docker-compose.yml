@@ -1,25 +1,29 @@
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: paytm-postgres
     environment:
-      POSTGRES_DB: seat_reservation
-      POSTGRES_USER: seat_reservation
-      POSTGRES_PASSWORD: seat_reservation
+      POSTGRES_DB: paytmdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U seat_reservation -d seat_reservation"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d paytmdb"]
       interval: 5s
       timeout: 3s
       retries: 10
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
 
   app:
     build: .
+    container_name: paytm-backend
     environment:
-      SPRING_PROFILES_ACTIVE: prod
-      DATABASE_URL: jdbc:postgresql://postgres:5432/seat_reservation
-      DATABASE_USERNAME: seat_reservation
-      DATABASE_PASSWORD: seat_reservation
+      DB_URL: jdbc:postgresql://postgres:5432/paytmdb
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgrespassword
+      JWT_SECRET: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
     depends_on:
       postgres:
         condition: service_healthy
