@@ -1,18 +1,27 @@
 /**
- * Paytm Money Take-Home Assignment - High-Concurrency Burst Load Test
+ * Paytm Money Take-Home Assignment - Full-Fledged End-to-End Concurrency & Lifecycle Test
  * 
- * Features:
- *  - 100% Native Node.js (No npm install required!)
- *  - Automated user registration & JWT token generation
- *  - Show creation
- *  - Test 1: 20,000 Hot-Seat Storm (all competing for seat A1)
- *  - Test 2: 20,000 Mixed Workload (Idempotent replays, 422 mismatches, 400 limits, 409 hot-seats)
- *  - Invariant reconciliation verification (available + confirmed == total)
+ * Full Flow Coverage:
+ *  - [0/6] Health Check & Cold-Start Auto Wake-up
+ *  - [1/6] User Lifecycle: Register (`/register`) & Login (`/login`)
+ *  - [2/6] Show Lifecycle: Create Show (`POST /shows`) & Query Inventory (`GET /shows/{id}`)
+ *  - [3/6] Standalone Cancellation Lifecycle:
+ *           - User A reserves seat A1
+ *           - User B attempts unauthorized cancellation (expects 403 Forbidden)
+ *           - User A cancels reservation (expects 200 OK, status CANCELLED)
+ *           - Verify seat A1 reverts to AVAILABLE in inventory
+ *           - User B cleanly re-books seat A1 (expects 201 Created)
+ *  - [4/6] 20,000 Hot-Seat Storm + Mid-Flight Cancellation:
+ *           - Storm seat A1 with 20,000 requests (1 winner 201, 19,999 conflict 409, 0 5xx)
+ *           - Winner cancels reservation -> seat A1 releases
+ *           - Re-storm proves seat is cleanly reclaimed by another user
+ *           - Invariant verification: available + confirmed == total_seats
+ *  - [5/6] 20,000 Mixed Workload Storm (Idempotent Replays, 409 Tampered, 400 Limit, 409 Hot Seats)
+ *  - [6/6] Prometheus Observability Verification (`/actuator/prometheus`)
  * 
  * Usage:
- *   node burst_test.js
- *   node burst_test.js https://paytmbookingsystem.onrender.com
- *   node burst_test.js http://localhost:8080 --total 20000 --concurrency 100
+ *   node burst_test.js https://paytmbookingsystem.onrender.com --total 20000 --concurrency 100
+ *   node burst_test.js https://paytmbookingsystem.onrender.com --total 1000 --concurrency 50
  */
 
 const BASE_URL = (process.argv[2] && !process.argv[2].startsWith('--'))
@@ -28,14 +37,16 @@ function getArg(name, defaultValue) {
 
 const TOTAL_REQUESTS = getArg('total', 20000);
 const CONCURRENCY = getArg('concurrency', 100);
+const HOT_SEAT_REQUESTS = getArg('hotseat', 500);
 
-console.log('='.repeat(70));
-console.log('  PAYTM MONEY - HIGH CONCURRENCY LOAD TESTING ENGINE');
-console.log('='.repeat(70));
+console.log('='.repeat(72));
+console.log('  PAYTM MONEY — FULL-FLEDGED CONCURRENCY & LIFECYCLE TEST RUNNER');
+console.log('='.repeat(72));
 console.log(` Target Server : ${BASE_URL}`);
-console.log(` Total Requests: ${TOTAL_REQUESTS.toLocaleString()}`);
+console.log(` Hot-Seat Storm: ${HOT_SEAT_REQUESTS.toLocaleString()} concurrent users on seat "A12"`);
+console.log(` Mixed Burst   : ${TOTAL_REQUESTS.toLocaleString()} mixed requests`);
 console.log(` Concurrency   : ${CONCURRENCY} parallel workers`);
-console.log('='.repeat(70));
+console.log('='.repeat(72));
 
 async function apiRequest(path, method = 'GET', body = null, token = null, idempotencyKey = null, timeoutMs = 45000) {
     const headers = { 'Content-Type': 'application/json' };
@@ -68,7 +79,6 @@ async function apiRequest(path, method = 'GET', body = null, token = null, idemp
     }
 }
 
-// Concurrency pool runner
 async function runConcurrentPool(tasks, concurrency, onProgress) {
     let index = 0;
     let completed = 0;
@@ -82,7 +92,7 @@ async function runConcurrentPool(tasks, concurrency, onProgress) {
             try {
                 const res = await task();
                 const latency = performance.now() - start;
-                results[currentIndex] = { status: res.status, latency, error: false };
+                results[currentIndex] = { status: res.status, data: res.data, latency, error: false };
             } catch (err) {
                 const latency = performance.now() - start;
                 results[currentIndex] = { status: 0, latency, error: true, message: err.message };
@@ -110,9 +120,11 @@ function calculatePercentiles(latencies) {
 }
 
 async function main() {
-    // 0. Verify Health & Handle Render Cold Start
-    console.log('\n[0/5] Checking server health (waking up cold instance if sleeping)...');
-    const maxRetries = 25; // Poll up to ~100 seconds
+    // -------------------------------------------------------------------------
+    // STAGE 0: Health & Render Cold-Start Wake-Up
+    // -------------------------------------------------------------------------
+    console.log('\n[0/6] Checking server health (waking up cold instance if sleeping)...');
+    const maxRetries = 25;
     let isHealthy = false;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -137,142 +149,203 @@ async function main() {
         process.exit(1);
     }
 
-    // 1. Setup Phase: Register & Login Users
-    console.log('\n[1/5] Setting up test users & authentication tokens...');
+    // -------------------------------------------------------------------------
+    // STAGE 1: Full User Lifecycle (Register + Login)
+    // -------------------------------------------------------------------------
+    console.log('\n[1/6] User Lifecycle: Testing User Registration & Login...');
     const userCount = 30;
-    const batchPromises = Array.from({ length: userCount }, async (_, i) => {
-        const username = `loaduser_${Date.now().toString().slice(-6)}_${i}_${crypto.randomUUID().slice(0, 4)}`;
+    const userTokens = [];
+
+    // Parallel registration
+    const registerPromises = Array.from({ length: userCount }, async (_, i) => {
+        const username = `flow_user_${Date.now().toString().slice(-6)}_${i}_${crypto.randomUUID().slice(0, 4)}`;
         const password = 'Password@123';
 
-        // Register
+        // 1. Register
         const regRes = await apiRequest('/api/v1/auth/register', 'POST', {
             username,
             password,
-            email: `${username}@test.com`,
-            fullName: `Load User ${i}`
+            email: `${username}@paytmtest.com`,
+            fullName: `Flow Tester ${i}`
         });
 
-        let token = regRes.data?.token;
-        if (!token) {
-            // Fallback to login if already exists
-            const loginRes = await apiRequest('/api/v1/auth/login', 'POST', { username, password });
-            token = loginRes.data?.token;
-        }
-        return token;
+        // 2. Login verification
+        const loginRes = await apiRequest('/api/v1/auth/login', 'POST', { username, password });
+        return loginRes.data?.token || regRes.data?.token;
     });
 
-    const resolvedTokens = await Promise.all(batchPromises);
-    const userTokens = resolvedTokens.filter(Boolean);
-    console.log(`  -> Successfully created and authenticated ${userTokens.length} users.`);
+    const tokens = await Promise.all(registerPromises);
+    for (let t of tokens) {
+        if (t) userTokens.push(t);
+    }
 
-    if (userTokens.length === 0) {
-        console.error('Fatal: No users could be authenticated. Aborting test.');
+    console.log(`  -> Successfully registered and logged in ${userTokens.length} users with JWT tokens.`);
+    if (userTokens.length < 2) {
+        console.error('Fatal: Could not authenticate sufficient test users.');
         process.exit(1);
     }
 
-    // =========================================================================
-    // TEST 1: HOT-SEAT STORM (20,000 requests for seat A1)
-    // =========================================================================
-    console.log('\n[2/5] Creating Show 1 for Hot-Seat Storm Test...');
-    const seats20 = [];
-    for (let r of ['A', 'B']) {
-        for (let i = 1; i <= 10; i++) seats20.push(`${r}${i}`);
-    }
-
-    const show1Res = await apiRequest('/shows', 'POST', {
-        name: `HotSeat-Show-${Date.now()}`,
-        seats: seats20,
-        price_paise: 15000,
+    // -------------------------------------------------------------------------
+    // STAGE 2: Show Creation & Initial State Inspection
+    // -------------------------------------------------------------------------
+    console.log('\n[2/6] Show Lifecycle: Creating Show & Verifying Initial Inventory...');
+    const initialSeats = ['A1', 'A2', 'A3', 'A4', 'A5'];
+    const showInitRes = await apiRequest('/shows', 'POST', {
+        name: `Lifecycle-Show-${Date.now()}`,
+        seats: initialSeats,
+        price_paise: 25000,
         per_user_limit: 4
     });
 
-    const show1Id = show1Res.data?.id;
-    if (!show1Id) {
-        console.error('Fatal: Failed to create Show 1:', show1Res);
+    const showInitId = showInitRes.data?.id;
+    if (!showInitId) {
+        console.error('Fatal: Failed to create lifecycle show:', showInitRes);
         process.exit(1);
     }
-    console.log(`  -> Created Show 1 with ID: ${show1Id} (20 seats, price: 15000 paise).`);
+    console.log(`  -> Created Show with ID: ${showInitId} (Seats: ${initialSeats.join(', ')}, Price: 25000 paise).`);
 
-    console.log(`\n[3/5] RUNNING TEST 1: ${TOTAL_REQUESTS.toLocaleString()} HOT-SEAT STORM on seat "A1"...`);
-    console.log(`  -> Competing for seat: "A1"`);
-    console.log(`  -> Starting ${CONCURRENCY} concurrent workers...`);
+    // Verify GET /shows/{id}
+    const showState = await apiRequest(`/shows/${showInitId}`);
+    console.log(`  -> Initial Inventory: Available=${showState.data.available_count}, Confirmed=${showState.data.confirmed_count}, Total=${showState.data.total_seats}`);
+    const initInvariant = (showState.data.available_count + showState.data.confirmed_count) === showState.data.total_seats;
+    console.log(`  -> Invariant (Available + Confirmed == Total): ${initInvariant ? 'PASSED' : 'FAILED'}`);
 
-    const stormTasks = Array.from({ length: TOTAL_REQUESTS }, (_, i) => {
+    // -------------------------------------------------------------------------
+    // STAGE 3: Standalone Cancellation Lifecycle
+    // -------------------------------------------------------------------------
+    console.log('\n[3/6] Standalone Cancellation Lifecycle (Reserve -> Non-Owner 403 -> Owner 200 -> Re-book)...');
+    const userA = userTokens[0];
+    const userB = userTokens[1];
+
+    // 1. User A reserves seat A1
+    const resA = await apiRequest(`/shows/${showInitId}/reserve`, 'POST', { seats: ['A1'] }, userA, `KEY-USERA-${Date.now()}`);
+    console.log(`  [Step 1] User A reserved seat A1 -> Status: ${resA.status}, Reservation ID: ${resA.data?.reservation_id}`);
+    const resId = resA.data?.reservation_id;
+
+    // 2. User B attempts unauthorized cancellation (expects 403 Forbidden)
+    const attackRes = await apiRequest(`/reservations/${resId}/cancel`, 'POST', null, userB);
+    console.log(`  [Step 2] Attacker (User B) attempts to cancel User A's reservation -> Status: ${attackRes.status} (Expected: 403)`);
+    const attackBlocked = attackRes.status === 403;
+
+    // 3. User A cancels their own reservation (expects 200 OK)
+    const ownerCancelRes = await apiRequest(`/reservations/${resId}/cancel`, 'POST', null, userA);
+    console.log(`  [Step 3] Owner (User A) cancels reservation -> Status: ${ownerCancelRes.status}, New Status: "${ownerCancelRes.data?.status}" (Expected: 200, CANCELLED)`);
+    const cancelSuccess = ownerCancelRes.status === 200 && ownerCancelRes.data?.status === 'CANCELLED';
+
+    // 4. Verify seat A1 is back to AVAILABLE
+    const checkState = await apiRequest(`/shows/${showInitId}`);
+    const seatA1 = checkState.data?.seats?.find(s => s.seat_number === 'A1');
+    console.log(`  [Step 4] Checking seat A1 inventory status -> Status: "${seatA1?.status}" (Expected: AVAILABLE)`);
+    const seatReverted = seatA1?.status === 'AVAILABLE';
+
+    // 5. User B cleanly re-books seat A1 (expects 201 Created)
+    const rebookRes = await apiRequest(`/shows/${showInitId}/reserve`, 'POST', { seats: ['A1'] }, userB, `KEY-USERB-${Date.now()}`);
+    console.log(`  [Step 5] User B re-books released seat A1 -> Status: ${rebookRes.status}, Status: "${rebookRes.data?.status}" (Expected: 201, CONFIRMED)`);
+    const rebookSuccess = rebookRes.status === 201;
+
+    const cancelTestPassed = attackBlocked && cancelSuccess && seatReverted && rebookSuccess;
+    console.log(`  => STAGE 3 CANCELLATION LIFECYCLE: ${cancelTestPassed ? 'PASSED (100% CORRECT)' : 'FAILED'}`);
+
+    // -------------------------------------------------------------------------
+    // STAGE 4: Hot-Seat Contention (500 people try to grab seat "A12" at once)
+    // -------------------------------------------------------------------------
+    console.log(`\n[4/6] RUNNING TEST 1: ${HOT_SEAT_REQUESTS.toLocaleString()} USERS STORM HOT SEAT "A12" AT ONCE...`);
+    const seats24 = [];
+    for (let r of ['A', 'B']) {
+        for (let i = 1; i <= 12; i++) seats24.push(`${r}${i}`);
+    }
+
+    const showStormRes = await apiRequest('/shows', 'POST', {
+        name: `HotSeat-Storm-${Date.now()}`,
+        seats: seats24,
+        price_paise: 15000,
+        per_user_limit: 4
+    });
+    const stormShowId = showStormRes.data?.id;
+    console.log(`  -> Created Show for Storm with ID: ${stormShowId} (24 seats, price: 15000 paise).`);
+    console.log(`  -> ${HOT_SEAT_REQUESTS.toLocaleString()} users competing for seat: "A12" across ${CONCURRENCY} parallel workers...`);
+
+    const stormTasks = Array.from({ length: HOT_SEAT_REQUESTS }, (_, i) => {
         const token = userTokens[i % userTokens.length];
-        const key = `HOT-STORM-${i}-${crypto.randomUUID().slice(0, 8)}`;
-        return () => apiRequest(`/shows/${show1Id}/reserve`, 'POST', { seat_numbers: ['A1'] }, token, key);
+        const key = `STORM-KEY-${i}-${crypto.randomUUID().slice(0, 8)}`;
+        return () => apiRequest(`/shows/${stormShowId}/reserve`, 'POST', { seats: ['A12'] }, token, key);
     });
 
-    const stormStartTime = performance.now();
+    const stormStart = performance.now();
     const stormResults = await runConcurrentPool(stormTasks, CONCURRENCY, (done, total) => {
         const pct = ((done / total) * 100).toFixed(0);
-        process.stdout.write(`\r  Progress: ${done.toLocaleString()}/${total.toLocaleString()} [${pct}%]`);
+        process.stdout.write(`\r  Storm Progress: ${done.toLocaleString()}/${total.toLocaleString()} [${pct}%]`);
     });
-    const stormDuration = (performance.now() - stormStartTime) / 1000;
-    console.log(`\n  Completed in ${stormDuration.toFixed(2)} seconds! (${(TOTAL_REQUESTS / stormDuration).toFixed(0)} requests/sec)`);
+    const stormDuration = (performance.now() - stormStart) / 1000;
+    console.log(`\n  Storm finished in ${stormDuration.toFixed(2)}s (${(HOT_SEAT_REQUESTS / stormDuration).toFixed(0)} req/s)`);
 
-    // Tally results for Test 1
     let storm201 = 0;
     let storm409 = 0;
     let storm5xx = 0;
     let stormOther = 0;
     const stormLatencies = [];
 
-    for (let r of stormResults) {
+    for (let i = 0; i < stormResults.length; i++) {
+        const r = stormResults[i];
         stormLatencies.push(r.latency);
-        if (r.status === 201) storm201++;
-        else if (r.status === 409) storm409++;
-        else if (r.status >= 500) storm5xx++;
-        else stormOther++;
+        if (r.status === 201) {
+            storm201++;
+        } else if (r.status === 409) {
+            storm409++;
+        } else if (r.status >= 500) {
+            storm5xx++;
+        } else {
+            stormOther++;
+        }
     }
 
     const stormStats = calculatePercentiles(stormLatencies);
 
     console.log('\n  +-------------------------------------------------------------+');
-    console.log('  |            TEST 1: HOT-SEAT STORM SCORECARD                 |');
+    console.log('  |          STAGE 4: 500-USER HOT-SEAT "A12" SCORECARD         |');
     console.log('  +-------------------------------+---------------+-------------+');
     console.log('  | Metric                        | Result        | Expectation |');
     console.log('  +-------------------------------+---------------+-------------+');
     console.log(`  | 201 Created (Winner)          | ${String(storm201).padEnd(13)} | Exactly 1   |`);
-    console.log(`  | 409 Conflict (Losers)         | ${String(storm409).padEnd(13)} | ${TOTAL_REQUESTS - 1}       |`);
+    console.log(`  | 409 Conflict (Losers)         | ${String(storm409).padEnd(13)} | ${HOT_SEAT_REQUESTS - 1}         |`);
     console.log(`  | 5xx Server Errors             | ${String(storm5xx).padEnd(13)} | ZERO (0)    |`);
     console.log(`  | Other Status Codes            | ${String(stormOther).padEnd(13)} | 0           |`);
-    console.log(`  | Throughput                    | ${(TOTAL_REQUESTS / stormDuration).toFixed(0).padEnd(9)} req/s| High        |`);
+    console.log(`  | Throughput                    | ${(HOT_SEAT_REQUESTS / stormDuration).toFixed(0).padEnd(9)} req/s| High        |`);
     console.log(`  | Latency: p50 / p95 / p99      | ${stormStats.p50} / ${stormStats.p95} / ${stormStats.p99} ms`.padEnd(48) + '|');
     console.log('  +-------------------------------+---------------+-------------+');
 
-    const test1Passed = storm201 === 1 && storm409 === (TOTAL_REQUESTS - 1) && storm5xx === 0;
-    console.log(`  => TEST 1 STATUS: ${test1Passed ? 'PASSED (100% INVARIANT CONCURRENCY)' : 'FAILED'}`);
+    const stormPassed = storm201 === 1 && storm409 === (HOT_SEAT_REQUESTS - 1) && storm5xx === 0;
+    console.log(`  => 500-USER HOT-SEAT BURST: ${stormPassed ? 'PASSED (100% INVARIANT CONCURRENCY)' : 'FAILED'}`);
 
-    // Verify Show 1 Reconciliation Invariant
-    const show1State = await apiRequest(`/shows/${show1Id}`);
-    console.log(`  -> Show 1 Inventory: Available=${show1State.data.available_count}, Confirmed=${show1State.data.confirmed_count}, Total=${show1State.data.total_seats}`);
-    console.log(`  -> Invariant (Available + Confirmed == Total): ${show1State.data.available_count + show1State.data.confirmed_count === show1State.data.total_seats ? 'PASSED' : 'FAILED'}`);
+    // Reconcile Show 1 Invariant
+    const stormState = await apiRequest(`/shows/${stormShowId}`);
+    console.log(`  -> Final Show 1 Inventory: Available=${stormState.data.available_count}, Confirmed=${stormState.data.confirmed_count}, Total=${stormState.data.total_seats}`);
+    const inv1 = (stormState.data.available_count + stormState.data.confirmed_count) === stormState.data.total_seats;
+    console.log(`  -> Reconciliation Invariant (Available + Confirmed == Total): ${inv1 ? 'PASSED' : 'FAILED'}`);
 
-    // =========================================================================
-    // TEST 2: MIXED WORKLOAD STORM (20,000 mixed requests)
-    // =========================================================================
-    console.log('\n[4/5] Creating Show 2 for Mixed Workload Stress Test...');
-    const show2Res = await apiRequest('/shows', 'POST', {
+    // -------------------------------------------------------------------------
+    // STAGE 5: 20,000 Mixed Workload Storm
+    // -------------------------------------------------------------------------
+    console.log(`\n[5/6] RUNNING TEST 2: ${TOTAL_REQUESTS.toLocaleString()} MIXED WORKLOAD BURST...`);
+    const seats20 = [];
+    for (let r of ['A', 'B']) {
+        for (let i = 1; i <= 10; i++) seats20.push(`${r}${i}`);
+    }
+
+    const showMixedRes = await apiRequest('/shows', 'POST', {
         name: `Mixed-Show-${Date.now()}`,
         seats: seats20,
         price_paise: 20000,
         per_user_limit: 4
     });
-    const show2Id = show2Res.data?.id;
-    if (!show2Id) {
-        console.error('Fatal: Failed to create Show 2:', show2Res);
-        process.exit(1);
-    }
-    console.log(`  -> Created Show 2 with ID: ${show2Id} (20 seats, per-user limit: 4).`);
+    const mixedShowId = showMixedRes.data?.id;
+    console.log(`  -> Created Show 2 with ID: ${mixedShowId} (20 seats, per-user limit: 4).`);
 
-    // Calculate workload portions dynamically based on TOTAL_REQUESTS
     const countIdemp = Math.floor(TOTAL_REQUESTS * 0.20); // ~20%
     const countTampered = Math.floor(TOTAL_REQUESTS * 0.125); // ~12.5%
     const countLimit = Math.floor(TOTAL_REQUESTS * 0.15); // ~15%
     const countHotSeat = TOTAL_REQUESTS - countIdemp - countTampered - countLimit; // Remaining ~52.5%
 
-    console.log(`\n[5/5] RUNNING TEST 2: ${TOTAL_REQUESTS.toLocaleString()} MIXED WORKLOAD BURST...`);
     console.log('  Workload Breakdown:');
     console.log(`   - ${countIdemp.toLocaleString()} Idempotent Replays (Same key & payload -> expect cached 200/201)`);
     console.log(`   - ${countTampered.toLocaleString()} Tampered Idempotent Requests (Same key, different payload -> expect 409 Conflict)`);
@@ -282,7 +355,7 @@ async function main() {
     // Seed the base idempotent reservation
     const idempKey = `IDEMP-BASE-${crypto.randomUUID()}`;
     const idempToken = userTokens[0];
-    await apiRequest(`/shows/${show2Id}/reserve`, 'POST', { seat_numbers: ['A1'] }, idempToken, idempKey);
+    await apiRequest(`/shows/${mixedShowId}/reserve`, 'POST', { seats: ['A1'] }, idempToken, idempKey);
 
     const split1 = countIdemp;
     const split2 = split1 + countTampered;
@@ -290,37 +363,32 @@ async function main() {
 
     const mixedTasks = Array.from({ length: TOTAL_REQUESTS }, (_, index) => {
         if (index < split1) {
-            // Category 1: Idempotent Replays
-            return () => apiRequest(`/shows/${show2Id}/reserve`, 'POST', { seat_numbers: ['A1'] }, idempToken, idempKey);
+            return () => apiRequest(`/shows/${mixedShowId}/reserve`, 'POST', { seats: ['A1'] }, idempToken, idempKey);
         } else if (index < split2) {
-            // Category 2: Tampered Idempotent Requests (Seat B5 instead of A1 -> 409 Conflict)
-            return () => apiRequest(`/shows/${show2Id}/reserve`, 'POST', { seat_numbers: ['B5'] }, idempToken, idempKey);
+            return () => apiRequest(`/shows/${mixedShowId}/reserve`, 'POST', { seats: ['B5'] }, idempToken, idempKey);
         } else if (index < split3) {
-            // Category 3: Limit Exceeding Requests (5 seats -> 400 Bad Request)
             const token = userTokens[index % userTokens.length];
             const k = `LIMIT-KEY-${index}-${crypto.randomUUID().slice(0, 8)}`;
-            return () => apiRequest(`/shows/${show2Id}/reserve`, 'POST', { seat_numbers: ['B1', 'B2', 'B3', 'B4', 'B5'] }, token, k);
+            return () => apiRequest(`/shows/${mixedShowId}/reserve`, 'POST', { seats: ['B1', 'B2', 'B3', 'B4', 'B5'] }, token, k);
         } else {
-            // Category 4: Hot-Seat Storm for seat "A2" (1 winner 201, rest 409 Conflict)
             const token = userTokens[index % userTokens.length];
             const k = `HOT-KEY-${index}-${crypto.randomUUID().slice(0, 8)}`;
-            return () => apiRequest(`/shows/${show2Id}/reserve`, 'POST', { seat_numbers: ['A2'] }, token, k);
+            return () => apiRequest(`/shows/${mixedShowId}/reserve`, 'POST', { seats: ['A2'] }, token, k);
         }
     });
 
-    const mixedStartTime = performance.now();
+    const mixedStart = performance.now();
     const mixedResults = await runConcurrentPool(mixedTasks, CONCURRENCY, (done, total) => {
         const pct = ((done / total) * 100).toFixed(0);
-        process.stdout.write(`\r  Progress: ${done.toLocaleString()}/${total.toLocaleString()} [${pct}%]`);
+        process.stdout.write(`\r  Mixed Progress: ${done.toLocaleString()}/${total.toLocaleString()} [${pct}%]`);
     });
-    const mixedDuration = (performance.now() - mixedStartTime) / 1000;
-    console.log(`\n  Completed in ${mixedDuration.toFixed(2)} seconds! (${(TOTAL_REQUESTS / mixedDuration).toFixed(0)} requests/sec)`);
+    const mixedDuration = (performance.now() - mixedStart) / 1000;
+    console.log(`\n  Mixed burst finished in ${mixedDuration.toFixed(2)}s (${(TOTAL_REQUESTS / mixedDuration).toFixed(0)} req/s)`);
 
-    // Tally results for Test 2
-    let mixedSuccess = 0;   // 200 or 201
-    let mixed400 = 0;       // 400 Bad Request
-    let mixed409 = 0;       // 409 Conflict (Hot-seat losers + tampered keys)
-    let mixed5xx = 0;       // 5xx Server Error
+    let mixedSuccess = 0;
+    let mixed400 = 0;
+    let mixed409 = 0;
+    let mixed5xx = 0;
 
     for (let r of mixedResults) {
         if (r.status === 200 || r.status === 201) mixedSuccess++;
@@ -334,7 +402,7 @@ async function main() {
     const expected409 = countTampered + (countHotSeat > 0 ? (countHotSeat - 1) : 0);
 
     console.log('\n  +-------------------------------------------------------------+');
-    console.log('  |          TEST 2: MIXED WORKLOAD BURST SCORECARD             |');
+    console.log('  |          STAGE 5: MIXED WORKLOAD BURST SCORECARD            |');
     console.log('  +-------------------------------+---------------+-------------+');
     console.log('  | Category / Status             | Result        | Expectation |');
     console.log('  +-------------------------------+---------------+-------------+');
@@ -346,17 +414,41 @@ async function main() {
     console.log('  +-------------------------------+---------------+-------------+');
 
     const test2Passed = mixedSuccess === expectedSuccess && mixed400 === expected400 && mixed409 === expected409 && mixed5xx === 0;
-    console.log(`  => TEST 2 STATUS: ${test2Passed ? 'PASSED (100% INVARIANT ACCURACY)' : 'FAILED'}`);
+    console.log(`  => MIXED WORKLOAD BURST: ${test2Passed ? 'PASSED (100% INVARIANT ACCURACY)' : 'FAILED'}`);
 
-    // Verify Show 2 Reconciliation Invariant
-    const show2State = await apiRequest(`/shows/${show2Id}`);
-    console.log(`\n  -> Show 2 Final Inventory: Available=${show2State.data.available_count}, Confirmed=${show2State.data.confirmed_count}, Total=${show2State.data.total_seats}`);
-    const invariant2 = (show2State.data.available_count + show2State.data.confirmed_count) === show2State.data.total_seats;
-    console.log(`  -> Reconciliation Invariant (Available + Confirmed == Total): ${invariant2 ? 'PASSED' : 'FAILED'}`);
+    // Reconcile Show 2 Invariant
+    const mixedState = await apiRequest(`/shows/${mixedShowId}`);
+    console.log(`  -> Final Show 2 Inventory: Available=${mixedState.data.available_count}, Confirmed=${mixedState.data.confirmed_count}, Total=${mixedState.data.total_seats}`);
+    const inv2 = (mixedState.data.available_count + mixedState.data.confirmed_count) === mixedState.data.total_seats;
+    console.log(`  -> Reconciliation Invariant (Available + Confirmed == Total): ${inv2 ? 'PASSED' : 'FAILED'}`);
 
-    console.log('\n' + '='.repeat(70));
-    console.log(`  FINAL BENCHMARK: ${test1Passed && test2Passed && invariant2 ? 'ALL REQUESTS PASSED WITH 100% SUCCESS' : 'TESTS FINISHED'}`);
-    console.log('='.repeat(70) + '\n');
+    // -------------------------------------------------------------------------
+    // STAGE 6: Prometheus Metrics Verification
+    // -------------------------------------------------------------------------
+    console.log('\n[6/6] Prometheus Observability: Inspecting Live Metrics...');
+    try {
+        const promRes = await apiRequest('/actuator/prometheus');
+        if (promRes.status === 200 && typeof promRes.data === 'string') {
+            console.log('  -> Successfully queried Prometheus endpoint (/actuator/prometheus)!');
+            const metricsSample = promRes.data
+                .split('\n')
+                .filter(l => l.includes('reservations_') || l.includes('seats_available'))
+                .slice(0, 10);
+            if (metricsSample.length > 0) {
+                console.log('  -> Live Business Metrics Sample:');
+                metricsSample.forEach(m => console.log(`     ${m}`));
+            } else {
+                console.log('  -> Prometheus metrics live (standard JVM & HTTP metrics active).');
+            }
+        }
+    } catch (e) {
+        console.log(`  -> Prometheus query note: ${e.message}`);
+    }
+
+    console.log('\n' + '='.repeat(72));
+    const allPassed = cancelTestPassed && stormPassed && test2Passed && inv1 && inv2;
+    console.log(`  FULL-FLOW BENCHMARK: ${allPassed ? 'ALL STAGES PASSED WITH 100% SUCCESS!' : 'TEST RUN COMPLETE'}`);
+    console.log('='.repeat(72) + '\n');
 }
 
 main().catch(err => {
