@@ -1,5 +1,6 @@
 package com.paytm.project.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotEmpty;
 import lombok.AllArgsConstructor;
@@ -17,5 +18,10 @@ public class ReserveSeatRequest {
 
     @NotEmpty(message = "seat_numbers cannot be empty")
     @JsonProperty("seat_numbers")
+    @JsonAlias({"seats", "seatNumbers"})
     private List<String> seatNumbers;
+
+    @JsonProperty("idempotency_key")
+    @JsonAlias({"idempotencyKey"})
+    private String idempotencyKey;
 }

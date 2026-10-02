@@ -164,7 +164,7 @@ class ReservationControllerTest {
                         .header("Idempotency-Key", idempotencyKey)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request2)))
-                .andExpect(status().isUnprocessableEntity());
+                .andExpect(status().isConflict());
     }
 
     @Test
@@ -184,7 +184,7 @@ class ReservationControllerTest {
     }
 
     @Test
-    void testReservationWithoutIdempotencyKeyHeaderIsRejected400() throws Exception {
+    void testReservationWithoutIdempotencyKeyIsRejected400() throws Exception {
         ReserveSeatRequest request = ReserveSeatRequest.builder()
                 .seatNumbers(List.of("A1"))
                 .build();
@@ -194,7 +194,92 @@ class ReservationControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("MISSING_HEADER"));
+                .andExpect(jsonPath("$.status").value(400));
+    }
+
+    @Test
+    void testReservationWithIdempotencyKeyInBodySucceeds() throws Exception {
+        ReserveSeatRequest request = ReserveSeatRequest.builder()
+                .seatNumbers(List.of("A7"))
+                .idempotencyKey("BODY-KEY-" + UUID.randomUUID())
+                .build();
+
+        mockMvc.perform(post("/shows/" + showId + "/reserve")
+                        .header("Authorization", "Bearer " + jwtToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("CONFIRMED"))
+                .andExpect(jsonPath("$.amount_paise").value(10000));
+    }
+
+    @Test
+    void testCancelReservationByOwnerAndRebook() throws Exception {
+        ReserveSeatRequest request = ReserveSeatRequest.builder()
+                .seatNumbers(List.of("A8"))
+                .idempotencyKey("CANCEL-TEST-" + UUID.randomUUID())
+                .build();
+
+        String resJson = mockMvc.perform(post("/shows/" + showId + "/reserve")
+                        .header("Authorization", "Bearer " + jwtToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+
+        ReservationResponse response = objectMapper.readValue(resJson, ReservationResponse.class);
+        Long reservationId = response.getReservationId();
+
+        // 1. Cancel reservation
+        mockMvc.perform(post("/reservations/" + reservationId + "/cancel")
+                        .header("Authorization", "Bearer " + jwtToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
+
+        // 2. Re-book the same seat by another user
+        String otherUser = "other_user_" + UUID.randomUUID().toString().substring(0, 6);
+        userRepository.save(User.builder().username(otherUser).password("pass").build());
+        String otherToken = jwtTokenService.generateToken(otherUser);
+
+        ReserveSeatRequest rebookRequest = ReserveSeatRequest.builder()
+                .seatNumbers(List.of("A8"))
+                .idempotencyKey("REBOOK-KEY-" + UUID.randomUUID())
+                .build();
+
+        mockMvc.perform(post("/shows/" + showId + "/reserve")
+                        .header("Authorization", "Bearer " + otherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rebookRequest)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("CONFIRMED"));
+    }
+
+    @Test
+    void testCancelReservationByNonOwnerIsForbidden() throws Exception {
+        ReserveSeatRequest request = ReserveSeatRequest.builder()
+                .seatNumbers(List.of("A5"))
+                .idempotencyKey("OWNER-TEST-" + UUID.randomUUID())
+                .build();
+
+        String resJson = mockMvc.perform(post("/shows/" + showId + "/reserve")
+                        .header("Authorization", "Bearer " + jwtToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+
+        ReservationResponse response = objectMapper.readValue(resJson, ReservationResponse.class);
+        Long reservationId = response.getReservationId();
+
+        // Another user attempts to cancel
+        String attacker = "attacker_" + UUID.randomUUID().toString().substring(0, 6);
+        userRepository.save(User.builder().username(attacker).password("pass").build());
+        String attackerToken = jwtTokenService.generateToken(attacker);
+
+        mockMvc.perform(post("/reservations/" + reservationId + "/cancel")
+                        .header("Authorization", "Bearer " + attackerToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
     }
 
     @Test
@@ -304,7 +389,7 @@ class ReservationControllerTest {
 
         // Payload variants
         ReserveSeatRequest idempotentAlteredRequest = ReserveSeatRequest.builder()
-                .seatNumbers(List.of("B5")) // Different seat for same key -> 422
+                .seatNumbers(List.of("B5")) // Different seat for same key -> 409 Conflict (Karan's requirement)
                 .build();
         String idempotentAlteredJson = objectMapper.writeValueAsString(idempotentAlteredRequest);
 
@@ -324,9 +409,8 @@ class ReservationControllerTest {
         CountDownLatch latch = new CountDownLatch(totalRequests);
 
         AtomicInteger successCount = new AtomicInteger(0);       // 200 or 201
-        AtomicInteger conflictCount = new AtomicInteger(0);      // 409 Conflict
+        AtomicInteger conflictCount = new AtomicInteger(0);      // 409 Conflict (Hot-seat losers + tampered keys)
         AtomicInteger badRequestCount = new AtomicInteger(0);    // 400 Bad Request
-        AtomicInteger unprocessableCount = new AtomicInteger(0); // 422 Unprocessable
         AtomicInteger serverErrorCount = new AtomicInteger(0);   // 5xx Server Errors
 
         for (int i = 0; i < totalRequests; i++) {
@@ -340,16 +424,16 @@ class ReservationControllerTest {
                                         .header("Idempotency-Key", idempotentKey)
                                         .contentType(MediaType.APPLICATION_JSON)
                                         .content(idempotentValidJson))
-                                .andDo(res -> countStatus(res.getResponse().getStatus(), successCount, conflictCount, badRequestCount, unprocessableCount, serverErrorCount));
+                                .andDo(res -> countStatus(res.getResponse().getStatus(), successCount, conflictCount, badRequestCount, serverErrorCount));
 
                     } else if (index < 6500) {
-                        // Category 2: 2,500 Tampered Idempotent Requests (Same Key, Different Payload -> 422)
+                        // Category 2: 2,500 Tampered Idempotent Requests (Same Key, Different Payload -> 409 Conflict)
                         mockMvc.perform(post("/shows/" + bigShowId + "/reserve")
                                         .header("Authorization", "Bearer " + idempotentToken)
                                         .header("Idempotency-Key", idempotentKey)
                                         .contentType(MediaType.APPLICATION_JSON)
                                         .content(idempotentAlteredJson))
-                                .andDo(res -> countStatus(res.getResponse().getStatus(), successCount, conflictCount, badRequestCount, unprocessableCount, serverErrorCount));
+                                .andDo(res -> countStatus(res.getResponse().getStatus(), successCount, conflictCount, badRequestCount, serverErrorCount));
 
                     } else if (index < 9500) {
                         // Category 3: 3,000 Limit Exceeding Requests (Trying to book 5 seats -> 400)
@@ -359,7 +443,7 @@ class ReservationControllerTest {
                                         .header("Idempotency-Key", "LIMIT-KEY-" + UUID.randomUUID().toString())
                                         .contentType(MediaType.APPLICATION_JSON)
                                         .content(limitExceedJson))
-                                .andDo(res -> countStatus(res.getResponse().getStatus(), successCount, conflictCount, badRequestCount, unprocessableCount, serverErrorCount));
+                                .andDo(res -> countStatus(res.getResponse().getStatus(), successCount, conflictCount, badRequestCount, serverErrorCount));
 
                     } else {
                         // Category 4: 10,500 Hot-Seat Storm Requests (Fighting for A2 -> 1 winner 201, rest 409)
@@ -369,7 +453,7 @@ class ReservationControllerTest {
                                         .header("Idempotency-Key", "HOT2-KEY-" + UUID.randomUUID().toString())
                                         .contentType(MediaType.APPLICATION_JSON)
                                         .content(hotSeatJson))
-                                .andDo(res -> countStatus(res.getResponse().getStatus(), successCount, conflictCount, badRequestCount, unprocessableCount, serverErrorCount));
+                                .andDo(res -> countStatus(res.getResponse().getStatus(), successCount, conflictCount, badRequestCount, serverErrorCount));
                     }
                 } catch (Exception e) {
                     serverErrorCount.incrementAndGet();
@@ -387,29 +471,25 @@ class ReservationControllerTest {
         // 1. Exactly 4,001 successes (4,000 cached idempotent replays + 1 hot seat winner)
         assertThat(successCount.get()).isEqualTo(4001);
 
-        // 2. Exactly 2,500 unprocessable entity errors (tampered idempotency payload rejected)
-        assertThat(unprocessableCount.get()).isEqualTo(2500);
-
-        // 3. Exactly 3,000 bad request errors (per-user limit exceeded)
+        // 2. Exactly 3,000 bad request errors (per-user limit exceeded)
         assertThat(badRequestCount.get()).isEqualTo(3000);
 
-        // 4. Exactly 10,499 conflict errors (hot seat losers)
-        assertThat(conflictCount.get()).isEqualTo(10499);
+        // 3. Exactly 12,999 conflict errors (10,499 hot seat losers + 2,500 tampered idempotency keys)
+        assertThat(conflictCount.get()).isEqualTo(12999);
 
-        // 5. Invariant: ZERO server errors (5xx)
+        // 4. Invariant: ZERO server errors (5xx)
         assertThat(serverErrorCount.get()).isEqualTo(0);
 
-        // 6. Reconciliation Invariant: available + confirmed == total seats (20)
+        // 5. Reconciliation Invariant: available + confirmed == total seats (20)
         ShowResponse finalShow = showService.getShow(bigShowId);
         assertThat(finalShow.getAvailableCount() + finalShow.getConfirmedCount())
                 .isEqualTo(finalShow.getTotalSeats().longValue());
     }
 
-    private void countStatus(int status, AtomicInteger success, AtomicInteger conflict, AtomicInteger badReq, AtomicInteger unproc, AtomicInteger err) {
+    private void countStatus(int status, AtomicInteger success, AtomicInteger conflict, AtomicInteger badReq, AtomicInteger err) {
         if (status == 200 || status == 201) success.incrementAndGet();
         else if (status == 409) conflict.incrementAndGet();
         else if (status == 400) badReq.incrementAndGet();
-        else if (status == 422) unproc.incrementAndGet();
         else err.incrementAndGet();
     }
 }

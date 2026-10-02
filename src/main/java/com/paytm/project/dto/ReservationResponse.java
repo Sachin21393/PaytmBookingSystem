@@ -29,6 +29,11 @@ public class ReservationResponse {
     @JsonProperty("total_amount_paise")
     private Long totalAmountPaise;
 
+    @JsonProperty("amount_paise")
+    public Long getAmountPaise() {
+        return totalAmountPaise;
+    }
+
     private String status;
 
     @JsonProperty("created_at")

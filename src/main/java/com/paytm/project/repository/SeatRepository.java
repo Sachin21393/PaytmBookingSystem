@@ -29,4 +29,8 @@ public interface SeatRepository extends JpaRepository<Seat, Long> {
             @Param("showId") Long showId,
             @Param("seatNumbers") Collection<String> seatNumbers
     );
+
+    List<Seat> findByReservationId(Long reservationId);
+
+    long countByStatus(com.paytm.project.entity.SeatStatus status);
 }
